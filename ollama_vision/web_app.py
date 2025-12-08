@@ -173,7 +173,7 @@ def process_job(job_id):
         
         # Save image
         workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        output_dir = os.path.join(workspace_root, REALVISXL_CONFIG.get('output_directory', 'ollama_vision/web_images/'))
+        output_dir = os.path.join(workspace_root, REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/web_images/'))
         os.makedirs(output_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
