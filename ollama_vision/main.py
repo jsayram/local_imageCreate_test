@@ -20,7 +20,7 @@ Always include these elements in your prompts:
 - Detailed subject description with specific features
 - Lighting conditions (e.g., golden hour, soft natural light, studio lighting)
 - Camera/perspective details (e.g., close-up, wide angle, eye level)
-- Quality enhancers: "8K resolution, ultra HD, photorealistic, masterpiece, professional photography"
+- Quality enhancers: "HD resolution, ultra HD, photorealistic, masterpiece, professional photography"
 - Texture and material details
 - Background/environment description
 - Mood and atmosphere
@@ -78,17 +78,32 @@ try:
         device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
         dtype = torch.float16 if device != "cpu" else torch.float32
         
-        # Use local model path if available, otherwise download from HuggingFace
+        # Use local model path for offline operation
         local_model_path = os.path.join(os.path.dirname(__file__), 'models', 'stable-diffusion-v1-4')
+        
         if os.path.exists(local_model_path):
-            console.print("[dim]Loading model from local cache...[/dim]")
-            pipe = StableDiffusionPipeline.from_pretrained(local_model_path, torch_dtype=dtype, local_files_only=True)
+            console.print(f"[dim]Loading model from local cache ({device})...[/dim]")
+            pipe = StableDiffusionPipeline.from_pretrained(
+                local_model_path, 
+                torch_dtype=dtype, 
+                local_files_only=True
+            )
         else:
-            console.print("[dim]Downloading model (one-time)...[/dim]")
-            pipe = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=dtype, cache_dir=os.path.join(os.path.dirname(__file__), 'models'))
+            console.print("[red]Model not found locally![/red]")
+            console.print("[yellow]Please run 'python ollama_vision/download_models.py' first to download the model.[/yellow]")
+            console.print("[yellow]This is required for offline operation.[/yellow]")
+            raise FileNotFoundError(f"Model not found at {local_model_path}. Run download_models.py first.")
+        
         pipe.safety_checker = None  # Disable safety checker to save memory
         pipe = pipe.to(device)
-        generated_image = pipe(image_prompt, num_inference_steps=10, generator=torch.Generator(device).manual_seed(42)).images[0]  # Fixed seed for reproducible results
+        
+        # Generate image with configurable inference steps
+        num_steps = 20  # Increase for better quality (10-50 typical range)
+        generated_image = pipe(
+            image_prompt, 
+            num_inference_steps=num_steps, 
+            generator=torch.Generator(device).manual_seed(42)
+        ).images[0]
     os.makedirs('ollama_vision/generated_images', exist_ok=True)
     filename = f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     filepath = os.path.join('ollama_vision/generated_images', filename)

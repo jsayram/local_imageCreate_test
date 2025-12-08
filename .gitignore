@@ -137,3 +137,4 @@ ollama_vision/generated_images/
 
 # Local AI models (large files)
 ollama_vision/models/
+ollama_vision/verify_offline.py
