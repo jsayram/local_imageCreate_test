@@ -139,3 +139,10 @@ ollama_vision/generated_images/
 ollama_vision/models/
 ollama_vision/verify_offline.py
 ollama_vision/.DS_Store
+ollama_vision/prompts.py
+
+# Configuration files
+config.json
+.env
+.env.local
+config.template.json

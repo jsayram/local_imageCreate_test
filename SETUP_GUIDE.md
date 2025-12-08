@@ -17,6 +17,31 @@ This application generates hyper-realistic images using:
 1. **Python 3.8+** with virtual environment support
 2. **Ollama** installed and running ([download here](https://ollama.ai/download))
 
+## ⚙️ Configuration
+
+Copy the template configuration file and customize it:
+
+```bash
+cp config.template.json config.json
+```
+
+Edit `config.json` to set your preferred model and settings:
+
+```json
+{
+  "model_name": "your_ollama_model",
+  "inference_steps": 20,
+  "random_seed": 42,
+  "output_directory": "ollama_vision/generated_images"
+}
+```
+
+**Configuration Options:**
+- `model_name`: Ollama model to use for prompt optimization
+- `inference_steps`: Number of diffusion steps (higher = better quality, slower)
+- `random_seed`: Random seed for reproducible results
+- `output_directory`: Where generated images are saved
+
 ## 🚀 One-Time Setup (Requires Internet)
 
 ### Step 1: Install Dependencies
