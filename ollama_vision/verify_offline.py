@@ -92,9 +92,10 @@ def main():
     all_passed = all(result for _, result in checks)
     
     if all_passed:
-        console.print("[bold green]✓ ALL CHECKS PASSED - Ready for offline use![/bold green]")
+        console.print("[bold green]✓ ALL CHECKS PASSED - Ready for OFFLINE mode![/bold green]")
         console.print("\n[cyan]You can now run:[/cyan]")
         console.print("[white]  python ollama_vision/main.py[/white]")
+        console.print("[white]  (Choose option 1 for OFFLINE mode)[/white]")
     else:
         console.print("[bold yellow]⚠ SOME CHECKS FAILED[/bold yellow]")
         console.print("[yellow]Please resolve the issues above before running offline.[/yellow]")

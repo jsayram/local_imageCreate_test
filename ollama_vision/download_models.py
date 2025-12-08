@@ -57,9 +57,9 @@ def download_stable_diffusion():
             progress.update(task, description="Saving model locally...")
             pipe.save_pretrained(model_path)
             
-        console.print(f"[bold green]✓ Model downloaded successfully![/bold green]")
+        console.print(f"[green]✓ Model downloaded successfully![/green]")
         console.print(f"[green]Location:[/green] {model_path}")
-        console.print("[green]You can now run the app offline.[/green]")
+        console.print("[green]You can now run the app in OFFLINE mode.[/green]")
         return True
         
     except Exception as e:

@@ -49,7 +49,7 @@ This script will:
 - Verify your Ollama setup
 - Confirm the app is ready for offline use
 
-## 🎯 Running the App (Works Offline)
+## 🎯 Running the App
 
 ```bash
 # Make sure virtual environment is activated
@@ -58,6 +58,21 @@ source .venv/bin/activate
 # Run the application
 python ollama_vision/main.py
 ```
+
+### Mode Selection
+
+When you run the app, you'll be prompted to choose between:
+
+- **[OFFLINE MODE]** 🟢 - Uses locally downloaded models (no internet required)
+- **[ONLINE MODE]** 🔴 - Downloads models on-demand (requires internet)
+
+**For offline operation:**
+1. Run `python ollama_vision/download_models.py` first (one-time download)
+2. Choose option 1 (OFFLINE) when running the app
+
+**For online operation:**
+1. Choose option 2 (ONLINE) when running the app
+2. Models will be downloaded automatically if not cached locally
 
 ### Usage Examples
 
