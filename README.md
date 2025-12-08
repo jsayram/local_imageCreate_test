@@ -63,7 +63,7 @@ python ollama_vision/main.py
 
 2. **Choose Image Model (Apple Silicon only):**
    - `1` - Default (SD v1.4) - Faster, smaller images
-   - `2` - RealVisXL V4.0 - Hyper-realistic, larger images
+   - `2` - RealVisXL V5.0 - Hyper-realistic, larger images
 
 3. **Enter image filename** (optional) - For image-to-image mode
 4. **Enter your prompt** - Describe what you want to generate
@@ -152,7 +152,7 @@ local_imageCreate_test/
 - **Resolution:** 512×512
 - **Size:** ~4GB
 
-### RealVisXL V4.0 (Apple Silicon)
+### RealVisXL V5.0 (Apple Silicon)
 - **Best for:** Hyper-realistic portraits and photography
 - **Resolution:** 1024×1024 (or 832×1216 for portraits)
 - **Size:** ~6.5GB
@@ -188,4 +188,4 @@ ollama pull your_favorite_model_to_use
 ## 📄 License
 
 - **Stable Diffusion v1.4:** CreativeML Open RAIL-M License
-- **RealVisXL:** Check [model page](https://huggingface.co/SG161222/RealVisXL_V4.0) for licensing
+- **RealVisXL:** Check [model page](https://huggingface.co/SG161222/RealVisXL_V5.0) for licensing

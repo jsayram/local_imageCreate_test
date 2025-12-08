@@ -44,17 +44,15 @@ def get_pipeline(model_choice: str, device: str, dtype, offline_mode: bool, mode
         # Import SDXL pipeline only when needed (Apple Silicon only)
         from diffusers import StableDiffusionXLPipeline
         
-        # RealVisXL model from Hugging Face
-        # Using RealVisXL V4.0 - the latest stable version
-        realvisxl_model_id = "SG161222/RealVisXL_V4.0"
+        # RealVisXL model from Hugging Face - use config or default to V5.0
+        realvisxl_model_id = REALVISXL_CONFIG.get('model_id', 'SG161222/RealVisXL_V5.0')
         
-        # Local path for offline usage (optional)
-        # Uncomment and set this to use a local copy:
-        # local_realvisxl_path = os.path.join(models_dir, 'RealVisXL_V4.0')
-        local_realvisxl_path = os.path.join(models_dir, 'RealVisXL_V4.0')
+        # Extract version from model_id for local path (e.g., "RealVisXL_V5.0")
+        model_version = realvisxl_model_id.split('/')[-1] if '/' in realvisxl_model_id else 'RealVisXL_V5.0'
+        local_realvisxl_path = os.path.join(models_dir, model_version)
         
         if offline_mode and os.path.exists(local_realvisxl_path):
-            console.print(f"[dim]Loading RealVisXL from local cache ({device})...[/dim]")
+            console.print(f"[dim]Loading {model_version} from local cache ({device})...[/dim]")
             pipe = StableDiffusionXLPipeline.from_pretrained(
                 local_realvisxl_path,
                 torch_dtype=dtype,
@@ -71,7 +69,7 @@ def get_pipeline(model_choice: str, device: str, dtype, offline_mode: bool, mode
             download_choice = input("Enter Y to download or N to cancel: ").strip().lower()
             
             if download_choice == 'y':
-                console.print("[dim]Downloading RealVisXL V4.0...[/dim]")
+                console.print("[dim]Downloading RealVisXL V5.0...[/dim]")
                 pipe = StableDiffusionXLPipeline.from_pretrained(
                     realvisxl_model_id,
                     torch_dtype=dtype,
@@ -196,7 +194,7 @@ if is_apple_silicon():
     console.print("[bold magenta]🍎 Apple Silicon Detected![/bold magenta]")
     console.print("[bold cyan]Choose Image Generation Model:[/bold cyan]")
     console.print("1. [green]Default (SD v1.4)[/green] - Standard Stable Diffusion")
-    console.print("2. [yellow]RealVisXL V4.0[/yellow] - Realistic Vision XL (SDXL, higher quality)")
+    console.print("2. [yellow]RealVisXL V5.0[/yellow] - Realistic Vision XL (SDXL, higher quality)")
     console.print()
     
     while True:
@@ -207,7 +205,7 @@ if is_apple_silicon():
             break
         elif model_choice == "2":
             selected_model = "realvisxl"
-            console.print("[yellow]Using RealVisXL V4.0 (SDXL)[/yellow]")
+            console.print("[yellow]Using RealVisXL V5.0 (SDXL)[/yellow]")
             break
         else:
             console.print("[red]Please enter 1 for Default or 2 for RealVisXL.[/red]")

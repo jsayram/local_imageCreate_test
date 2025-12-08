@@ -52,7 +52,7 @@ OUTPUT_DIRECTORY = CONFIG.get('output_directory', 'ollama_vision/generated_image
 
 # RealVisXL configuration
 REALVISXL_CONFIG = CONFIG.get('realvisxl', {
-    "model_id": "SG161222/RealVisXL_V4.0",
+    "model_id": "SG161222/RealVisXL_V5.0",
     "inference_steps": 30,
     "guidance_scale": 7.5,
     "width": 1024,

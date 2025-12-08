@@ -80,13 +80,13 @@ def download_stable_diffusion():
         return False
 
 def download_realvisxl():
-    """Download RealVisXL V4.0 model to local cache (Apple Silicon only)."""
+    """Download RealVisXL V5.0 model to local cache (Apple Silicon only)."""
     from diffusers import StableDiffusionXLPipeline
     
     # Define local model directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(script_dir, 'models')
-    model_path = os.path.join(models_dir, 'RealVisXL_V4.0')
+    model_path = os.path.join(models_dir, 'RealVisXL_V5.0')
     
     # Check if model already exists
     if os.path.exists(model_path) and os.path.isdir(model_path):
@@ -95,7 +95,7 @@ def download_realvisxl():
             console.print(f"[green]✓ RealVisXL already downloaded at:[/green] {model_path}")
             return True
     
-    console.print("[bold cyan]Downloading RealVisXL V4.0 (SDXL)...[/bold cyan]")
+    console.print("[bold cyan]Downloading RealVisXL V5.0 (SDXL)...[/bold cyan]")
     console.print("[yellow]This is a one-time download (~6.5GB). Please wait...[/yellow]")
     
     try:
@@ -115,7 +115,7 @@ def download_realvisxl():
             
             # Download from Hugging Face
             pipe = StableDiffusionXLPipeline.from_pretrained(
-                "SG161222/RealVisXL_V4.0",
+                "SG161222/RealVisXL_V5.0",
                 torch_dtype=dtype,
                 cache_dir=models_dir,
                 use_safetensors=True
@@ -190,7 +190,7 @@ def main():
     
     # Only show RealVisXL option on Apple Silicon
     if is_apple_silicon():
-        console.print("2. [yellow]RealVisXL V4.0 only[/yellow] - Realistic Vision XL, SDXL (~6.5GB) [Apple Silicon]")
+        console.print("2. [yellow]RealVisXL V5.0 only[/yellow] - Realistic Vision XL, SDXL (~6.5GB) [Apple Silicon]")
         console.print("3. [magenta]Both models[/magenta] - Download SD v1.4 and RealVisXL (~10.5GB)")
     else:
         console.print("[dim](RealVisXL option available only on Apple Silicon)[/dim]")
