@@ -1,0 +1,9 @@
+# Requirements for the ollama_vision project
+ollama
+diffusers
+torch
+Pillow
+rich
+huggingface-hub
+transformers
+accelerate
