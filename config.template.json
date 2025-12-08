@@ -1,0 +1,6 @@
+{
+  "model_name": "your-model-name:latest",
+  "inference_steps": 20,
+  "random_seed": 42,
+  "output_directory": "ollama_vision/generated_images"
+}

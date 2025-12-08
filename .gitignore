@@ -145,4 +145,3 @@ ollama_vision/prompts.py
 config.json
 .env
 .env.local
-config.template.json
