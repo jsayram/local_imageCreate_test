@@ -282,34 +282,75 @@ try:
         
         if pipeline_type == "sdxl":
             # RealVisXL parameters from config
-            console.print(f"[dim]Using RealVisXL config: {REALVISXL_CONFIG['width']}x{REALVISXL_CONFIG['height']}, {REALVISXL_CONFIG['inference_steps']} steps[/dim]")
-            generated_image = pipe(
-                prompt=image_prompt,
-                negative_prompt=REALVISXL_CONFIG.get('negative_prompt', ''),
-                num_inference_steps=REALVISXL_CONFIG.get('inference_steps', 30),
-                guidance_scale=REALVISXL_CONFIG.get('guidance_scale', 7.5),
-                width=REALVISXL_CONFIG.get('width', 1024),
-                height=REALVISXL_CONFIG.get('height', 1024),
-                generator=torch.Generator(device).manual_seed(seed)
-            ).images[0]
+            num_images = REALVISXL_CONFIG.get('num_images', 1)
+            console.print(f"[dim]Using RealVisXL config: {REALVISXL_CONFIG['width']}x{REALVISXL_CONFIG['height']}, {REALVISXL_CONFIG['inference_steps']} steps, {num_images} image(s)[/dim]")
+            
+            # Parse dual prompts (prompt on line 1, prompt_2 on line 2)
+            prompt_lines = image_prompt.strip().split('\n')
+            main_prompt = prompt_lines[0].strip() if len(prompt_lines) > 0 else image_prompt
+            secondary_prompt = prompt_lines[1].strip() if len(prompt_lines) > 1 else ""
+            
+            # Show parsed prompts
+            if secondary_prompt:
+                console.print(f"[dim]Prompt 1: {main_prompt[:80]}...[/dim]")
+                console.print(f"[dim]Prompt 2: {secondary_prompt[:80]}...[/dim]")
+            
+            # Parse negative prompts (support dual negative prompts too)
+            neg_prompt = REALVISXL_CONFIG.get('negative_prompt', '')
+            
+            # Generate multiple images with different seeds
+            generated_images = []
+            for i in range(num_images):
+                current_seed = seed + i  # Vary seed for each image
+                console.print(f"[dim]Generating image {i+1}/{num_images} (seed: {current_seed})...[/dim]")
+                
+                result = pipe(
+                    prompt=main_prompt,
+                    prompt_2=secondary_prompt if secondary_prompt else None,
+                    negative_prompt=neg_prompt,
+                    negative_prompt_2=neg_prompt,
+                    num_inference_steps=REALVISXL_CONFIG.get('inference_steps', 30),
+                    guidance_scale=REALVISXL_CONFIG.get('guidance_scale', 7.5),
+                    width=REALVISXL_CONFIG.get('width', 1024),
+                    height=REALVISXL_CONFIG.get('height', 1024),
+                    generator=torch.Generator(device).manual_seed(current_seed)
+                ).images[0]
+                generated_images.append(result)
         else:
             # SD v1.4 parameters from config
-            console.print(f"[dim]Using SD v1.4 config: {SD_V14_CONFIG['width']}x{SD_V14_CONFIG['height']}, {SD_V14_CONFIG['inference_steps']} steps[/dim]")
-            generated_image = pipe(
-                prompt=image_prompt,
-                negative_prompt=SD_V14_CONFIG.get('negative_prompt', ''),
-                num_inference_steps=SD_V14_CONFIG.get('inference_steps', 50),
-                guidance_scale=SD_V14_CONFIG.get('guidance_scale', 7.5),
-                width=SD_V14_CONFIG.get('width', 512),
-                height=SD_V14_CONFIG.get('height', 512),
-                generator=torch.Generator(device).manual_seed(seed)
-            ).images[0]
+            num_images = SD_V14_CONFIG.get('num_images', 1)
+            console.print(f"[dim]Using SD v1.4 config: {SD_V14_CONFIG['width']}x{SD_V14_CONFIG['height']}, {SD_V14_CONFIG['inference_steps']} steps, {num_images} image(s)[/dim]")
+            
+            # Generate multiple images with different seeds
+            generated_images = []
+            for i in range(num_images):
+                current_seed = seed + i
+                console.print(f"[dim]Generating image {i+1}/{num_images} (seed: {current_seed})...[/dim]")
+                
+                result = pipe(
+                    prompt=image_prompt,
+                    negative_prompt=SD_V14_CONFIG.get('negative_prompt', ''),
+                    num_inference_steps=SD_V14_CONFIG.get('inference_steps', 50),
+                    guidance_scale=SD_V14_CONFIG.get('guidance_scale', 7.5),
+                    width=SD_V14_CONFIG.get('width', 512),
+                    height=SD_V14_CONFIG.get('height', 512),
+                    generator=torch.Generator(device).manual_seed(current_seed)
+                ).images[0]
+                generated_images.append(result)
         
+    # Save all generated images
     os.makedirs('ollama_vision/generated_images', exist_ok=True)
-    filename = f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    filepath = os.path.join('ollama_vision/generated_images', filename)
-    generated_image.save(filepath)
-    console.print(f"[green]Generated image saved to {filepath}[/green]")
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    for i, img in enumerate(generated_images):
+        if len(generated_images) > 1:
+            filename = f"generated_{timestamp}_{i+1}.png"
+        else:
+            filename = f"generated_{timestamp}.png"
+        filepath = os.path.join('ollama_vision/generated_images', filename)
+        img.save(filepath)
+        console.print(f"[green]Generated image saved to {filepath}[/green]")
+    
+    console.print(f"[bold green]✓ {len(generated_images)} image(s) generated successfully![/bold green]")
     gc.collect()  # Free memory
 except Exception as e:
     console.print(f"[red]Error generating image: {e}[/red]")
