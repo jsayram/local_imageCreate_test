@@ -134,3 +134,6 @@ logs/
 
 # Generated images
 ollama_vision/generated_images/
+
+# Local AI models (large files)
+ollama_vision/models/

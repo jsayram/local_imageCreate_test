@@ -6,11 +6,26 @@ from PIL import Image
 from rich.console import Console
 import torch
 from diffusers import StableDiffusionPipeline
+import gc
 
 console = Console()
 
 # Assuming the vision model is 'qwen3-vl:latest', change if different
 model_name = 'qwen3-vl:latest'
+
+# System prompt for generating detailed, hyper-realistic image prompts
+system_prompt = """You are an expert image prompt engineer for Stable Diffusion. Your task is to take the user's request and transform it into a highly detailed, hyper-realistic image generation prompt.
+
+Always include these elements in your prompts:
+- Detailed subject description with specific features
+- Lighting conditions (e.g., golden hour, soft natural light, studio lighting)
+- Camera/perspective details (e.g., close-up, wide angle, eye level)
+- Quality enhancers: "8K resolution, ultra HD, photorealistic, masterpiece, professional photography"
+- Texture and material details
+- Background/environment description
+- Mood and atmosphere
+
+Output ONLY the optimized prompt, nothing else. Do not include explanations or formatting - just the raw prompt text ready for image generation."""
 
 # Get image filename from user (assumed in images/ folder)
 image_filename = input("Enter image filename in images/ folder (or leave blank for text-only): ").strip()
@@ -37,33 +52,55 @@ if image_filename:
         console.print(f"[red]Error loading image: {e}[/red]")
         images = None
 
-# Generate response with loading indicator
+# Generate optimized prompt with system prompt for detailed, hyper-realistic images
 try:
-    with console.status("[bold green]Generating response...[/bold green]") as status:
-        response = ollama.generate(model=model_name, prompt=prompt, images=images)
-    console.print("[bold blue]Response:[/bold blue]", response['response'])
+    with console.status("[bold green]Creating optimized image prompt...[/bold green]") as status:
+        if images:
+            # Vision mode: describe the image and create a detailed prompt
+            full_prompt = f"Analyze this image and create a detailed, hyper-realistic prompt to generate a similar but enhanced version. User request: {prompt}"
+        else:
+            # Text mode: enhance the user's prompt
+            full_prompt = f"Create a detailed, hyper-realistic image generation prompt for: {prompt}"
+        
+        response = ollama.generate(model=model_name, prompt=full_prompt, system=system_prompt, images=images)
+    
+    image_prompt = response['response'].strip()
+    console.print("[bold blue]Optimized Image Prompt:[/bold blue]")
+    console.print(f"[cyan]{image_prompt}[/cyan]")
 except Exception as e:
     console.print(f"[red]Error: {e}[/red]")
+    image_prompt = prompt  # Fallback to original prompt
 
-# Generate image from prompt or response
-image_prompt = response['response'] if images else prompt
+# Generate image from optimized prompt
 console.print("[yellow]Generating image...[/yellow]")
 try:
     with console.status("[bold cyan]Creating image...[/bold cyan]") as status:
-        pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
-        pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-        generated_image = pipe(image_prompt, num_inference_steps=20).images[0]  # Reduced steps for speed
-    os.makedirs('generated_images', exist_ok=True)
+        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        dtype = torch.float16 if device != "cpu" else torch.float32
+        
+        # Use local model path if available, otherwise download from HuggingFace
+        local_model_path = os.path.join(os.path.dirname(__file__), 'models', 'stable-diffusion-v1-4')
+        if os.path.exists(local_model_path):
+            console.print("[dim]Loading model from local cache...[/dim]")
+            pipe = StableDiffusionPipeline.from_pretrained(local_model_path, torch_dtype=dtype, local_files_only=True)
+        else:
+            console.print("[dim]Downloading model (one-time)...[/dim]")
+            pipe = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=dtype, cache_dir=os.path.join(os.path.dirname(__file__), 'models'))
+        pipe.safety_checker = None  # Disable safety checker to save memory
+        pipe = pipe.to(device)
+        generated_image = pipe(image_prompt, num_inference_steps=10, generator=torch.Generator(device).manual_seed(42)).images[0]  # Fixed seed for reproducible results
+    os.makedirs('ollama_vision/generated_images', exist_ok=True)
     filename = f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    filepath = os.path.join('generated_images', filename)
+    filepath = os.path.join('ollama_vision/generated_images', filename)
     generated_image.save(filepath)
     console.print(f"[green]Generated image saved to {filepath}[/green]")
+    gc.collect()  # Free memory
 except Exception as e:
     console.print(f"[red]Error generating image: {e}[/red]")
 
 # Save the image if provided
 if image:
-    os.makedirs('generated_images', exist_ok=True)
+    os.makedirs('ollama_vision/generated_images', exist_ok=True)
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
     filepath = os.path.join('generated_images', filename)
     image.save(filepath)
