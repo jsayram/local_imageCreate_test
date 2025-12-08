@@ -2,5 +2,23 @@
   "model_name": "your-model-name:latest",
   "inference_steps": 20,
   "random_seed": 42,
-  "output_directory": "ollama_vision/generated_images"
+  "output_directory": "ollama_vision/generated_images",
+  
+  "realvisxl": {
+    "model_id": "SG161222/RealVisXL_V4.0",
+    "inference_steps": 30,
+    "guidance_scale": 7.5,
+    "width": 1024,
+    "height": 1024,
+    "negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, watermark, text, signature"
+  },
+  
+  "sd_v14": {
+    "model_id": "CompVis/stable-diffusion-v1-4",
+    "inference_steps": 50,
+    "guidance_scale": 7.5,
+    "width": 512,
+    "height": 512,
+    "negative_prompt": "blurry, low quality, distorted"
+  }
 }

@@ -49,3 +49,23 @@ MODEL_NAME = CONFIG.get('model_name', 'qwen3-vl:latest')
 INFERENCE_STEPS = CONFIG.get('inference_steps', 20)
 RANDOM_SEED = CONFIG.get('random_seed', 42)
 OUTPUT_DIRECTORY = CONFIG.get('output_directory', 'ollama_vision/generated_images')
+
+# RealVisXL configuration
+REALVISXL_CONFIG = CONFIG.get('realvisxl', {
+    "model_id": "SG161222/RealVisXL_V4.0",
+    "inference_steps": 30,
+    "guidance_scale": 7.5,
+    "width": 1024,
+    "height": 1024,
+    "negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, watermark, text, signature"
+})
+
+# SD v1.4 configuration
+SD_V14_CONFIG = CONFIG.get('sd_v14', {
+    "model_id": "CompVis/stable-diffusion-v1-4",
+    "inference_steps": 50,
+    "guidance_scale": 7.5,
+    "width": 512,
+    "height": 512,
+    "negative_prompt": "blurry, low quality, distorted"
+})

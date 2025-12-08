@@ -10,7 +10,7 @@ import torch
 from diffusers import StableDiffusionPipeline
 import gc
 from prompts import SYSTEM_PROMPT
-from config import MODEL_NAME, INFERENCE_STEPS, RANDOM_SEED
+from config import MODEL_NAME, INFERENCE_STEPS, RANDOM_SEED, REALVISXL_CONFIG, SD_V14_CONFIG
 
 # ============================================================================
 # Apple Silicon Detection Helper
@@ -63,9 +63,27 @@ def get_pipeline(model_choice: str, device: str, dtype, offline_mode: bool, mode
             )
         elif offline_mode:
             console.print("[red]OFFLINE MODE: RealVisXL not found locally![/red]")
-            console.print("[yellow]Please run 'python ollama_vision/download_models.py' with option 2 to download RealVisXL.[/yellow]")
-            console.print("[yellow]Or switch to ONLINE mode to download on-demand.[/yellow]")
-            raise FileNotFoundError(f"RealVisXL not found at {local_realvisxl_path}. Download it first or use online mode.")
+            console.print(f"[yellow]Expected location: {local_realvisxl_path}[/yellow]")
+            console.print()
+            
+            # Offer to download now
+            console.print("[bold cyan]Would you like to download RealVisXL now? (~6.5GB)[/bold cyan]")
+            download_choice = input("Enter Y to download or N to cancel: ").strip().lower()
+            
+            if download_choice == 'y':
+                console.print("[dim]Downloading RealVisXL V4.0...[/dim]")
+                pipe = StableDiffusionXLPipeline.from_pretrained(
+                    realvisxl_model_id,
+                    torch_dtype=dtype,
+                    cache_dir=models_dir,
+                    use_safetensors=True
+                )
+                console.print("[dim]Saving RealVisXL locally for offline use...[/dim]")
+                pipe.save_pretrained(local_realvisxl_path)
+                console.print("[green]✓ RealVisXL downloaded successfully![/green]")
+            else:
+                console.print("[yellow]Download cancelled. Please run 'python ollama_vision/download_models.py' to download later.[/yellow]")
+                raise FileNotFoundError(f"RealVisXL not found at {local_realvisxl_path}. Download cancelled.")
         else:
             # Online mode - download if needed
             if os.path.exists(local_realvisxl_path):
@@ -105,10 +123,27 @@ def get_pipeline(model_choice: str, device: str, dtype, offline_mode: bool, mode
                     local_files_only=True
                 )
             else:
-                console.print("[red]OFFLINE MODE: Model not found locally![/red]")
-                console.print("[yellow]Please run 'python ollama_vision/download_models.py' first to download the model.[/yellow]")
-                console.print("[yellow]Or switch to ONLINE mode to download on-demand.[/yellow]")
-                raise FileNotFoundError(f"Model not found at {local_model_path}. Run download_models.py first or use online mode.")
+                console.print("[red]OFFLINE MODE: SD v1.4 not found locally![/red]")
+                console.print(f"[yellow]Expected location: {local_model_path}[/yellow]")
+                console.print()
+                
+                # Offer to download now
+                console.print("[bold cyan]Would you like to download SD v1.4 now? (~4GB)[/bold cyan]")
+                download_choice = input("Enter Y to download or N to cancel: ").strip().lower()
+                
+                if download_choice == 'y':
+                    console.print("[dim]Downloading Stable Diffusion v1.4...[/dim]")
+                    pipe = StableDiffusionPipeline.from_pretrained(
+                        "CompVis/stable-diffusion-v1-4",
+                        torch_dtype=dtype,
+                        cache_dir=models_dir
+                    )
+                    console.print("[dim]Saving SD v1.4 locally for offline use...[/dim]")
+                    pipe.save_pretrained(local_model_path)
+                    console.print("[green]✓ SD v1.4 downloaded successfully![/green]")
+                else:
+                    console.print("[yellow]Download cancelled. Please run 'python ollama_vision/download_models.py' to download later.[/yellow]")
+                    raise FileNotFoundError(f"SD v1.4 not found at {local_model_path}. Download cancelled.")
         else:
             if os.path.exists(local_model_path):
                 console.print(f"[dim]Loading SD v1.4 from local cache ({device})...[/dim]")
@@ -235,35 +270,40 @@ except Exception as e:
 # Generate image from optimized prompt
 console.print("[yellow]Generating image...[/yellow]")
 try:
+    device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+    dtype = torch.float16 if device != "cpu" else torch.float32
+    models_dir = os.path.join(os.path.dirname(__file__), 'models')
+    
+    # Check if model exists BEFORE starting the spinner (so download prompt works)
+    pipe, pipeline_type = get_pipeline(selected_model, device, dtype, offline_mode, models_dir)
+    
     with console.status("[bold cyan]Creating image...[/bold cyan]") as status:
-        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-        dtype = torch.float16 if device != "cpu" else torch.float32
-        models_dir = os.path.join(os.path.dirname(__file__), 'models')
-        
-        # Load pipeline using helper function (handles both SD v1.4 and RealVisXL)
-        pipe, pipeline_type = get_pipeline(selected_model, device, dtype, offline_mode, models_dir)
         
         # Configure generation parameters based on pipeline type
-        num_steps = INFERENCE_STEPS
         seed = RANDOM_SEED
         
         if pipeline_type == "sdxl":
-            # SDXL-specific parameters for RealVisXL
-            # SDXL works best with larger images (1024x1024)
+            # RealVisXL parameters from config
+            console.print(f"[dim]Using RealVisXL config: {REALVISXL_CONFIG['width']}x{REALVISXL_CONFIG['height']}, {REALVISXL_CONFIG['inference_steps']} steps[/dim]")
             generated_image = pipe(
                 prompt=image_prompt,
-                negative_prompt="blurry, low quality, distorted, deformed, ugly, bad anatomy",
-                num_inference_steps=num_steps,
-                guidance_scale=7.5,
-                width=1024,
-                height=1024,
+                negative_prompt=REALVISXL_CONFIG.get('negative_prompt', ''),
+                num_inference_steps=REALVISXL_CONFIG.get('inference_steps', 30),
+                guidance_scale=REALVISXL_CONFIG.get('guidance_scale', 7.5),
+                width=REALVISXL_CONFIG.get('width', 1024),
+                height=REALVISXL_CONFIG.get('height', 1024),
                 generator=torch.Generator(device).manual_seed(seed)
             ).images[0]
         else:
-            # SD v1.4 parameters (original behavior)
+            # SD v1.4 parameters from config
+            console.print(f"[dim]Using SD v1.4 config: {SD_V14_CONFIG['width']}x{SD_V14_CONFIG['height']}, {SD_V14_CONFIG['inference_steps']} steps[/dim]")
             generated_image = pipe(
-                image_prompt, 
-                num_inference_steps=num_steps, 
+                prompt=image_prompt,
+                negative_prompt=SD_V14_CONFIG.get('negative_prompt', ''),
+                num_inference_steps=SD_V14_CONFIG.get('inference_steps', 50),
+                guidance_scale=SD_V14_CONFIG.get('guidance_scale', 7.5),
+                width=SD_V14_CONFIG.get('width', 512),
+                height=SD_V14_CONFIG.get('height', 512),
                 generator=torch.Generator(device).manual_seed(seed)
             ).images[0]
         
