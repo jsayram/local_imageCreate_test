@@ -1,9 +1,10 @@
 # Requirements for the ollama_vision project
 ollama
-diffusers
+diffusers>=0.25.0
 torch
 Pillow
 rich
 huggingface-hub
 transformers
 accelerate
+safetensors

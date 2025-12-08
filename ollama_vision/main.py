@@ -1,6 +1,8 @@
 import ollama
 import base64
 import os
+import sys
+import platform
 from datetime import datetime
 from PIL import Image
 from rich.console import Console
@@ -8,7 +10,123 @@ import torch
 from diffusers import StableDiffusionPipeline
 import gc
 from prompts import SYSTEM_PROMPT
-from config import MODEL_NAME
+from config import MODEL_NAME, INFERENCE_STEPS, RANDOM_SEED
+
+# ============================================================================
+# Apple Silicon Detection Helper
+# ============================================================================
+def is_apple_silicon() -> bool:
+    """Detect if running on Apple Silicon (M1/M2/M3)."""
+    return (
+        sys.platform == "darwin" 
+        and platform.machine() == "arm64" 
+        and torch.backends.mps.is_available()
+    )
+
+# ============================================================================
+# Pipeline Loading Helper
+# ============================================================================
+def get_pipeline(model_choice: str, device: str, dtype, offline_mode: bool, models_dir: str):
+    """
+    Load and return the appropriate pipeline based on model choice.
+    
+    Args:
+        model_choice: "default" or "realvisxl"
+        device: "cuda", "mps", or "cpu"
+        dtype: torch dtype (float16 or float32)
+        offline_mode: Whether to use local_files_only
+        models_dir: Path to models directory
+    
+    Returns:
+        Loaded pipeline ready for inference
+    """
+    if model_choice == "realvisxl":
+        # Import SDXL pipeline only when needed (Apple Silicon only)
+        from diffusers import StableDiffusionXLPipeline
+        
+        # RealVisXL model from Hugging Face
+        # Using RealVisXL V4.0 - the latest stable version
+        realvisxl_model_id = "SG161222/RealVisXL_V4.0"
+        
+        # Local path for offline usage (optional)
+        # Uncomment and set this to use a local copy:
+        # local_realvisxl_path = os.path.join(models_dir, 'RealVisXL_V4.0')
+        local_realvisxl_path = os.path.join(models_dir, 'RealVisXL_V4.0')
+        
+        if offline_mode and os.path.exists(local_realvisxl_path):
+            console.print(f"[dim]Loading RealVisXL from local cache ({device})...[/dim]")
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                local_realvisxl_path,
+                torch_dtype=dtype,
+                local_files_only=True,
+                use_safetensors=True
+            )
+        elif offline_mode:
+            console.print("[red]OFFLINE MODE: RealVisXL not found locally![/red]")
+            console.print("[yellow]Please run 'python ollama_vision/download_models.py' with option 2 to download RealVisXL.[/yellow]")
+            console.print("[yellow]Or switch to ONLINE mode to download on-demand.[/yellow]")
+            raise FileNotFoundError(f"RealVisXL not found at {local_realvisxl_path}. Download it first or use online mode.")
+        else:
+            # Online mode - download if needed
+            if os.path.exists(local_realvisxl_path):
+                console.print(f"[dim]Loading RealVisXL from local cache ({device})...[/dim]")
+                pipe = StableDiffusionXLPipeline.from_pretrained(
+                    local_realvisxl_path,
+                    torch_dtype=dtype,
+                    local_files_only=True,
+                    use_safetensors=True
+                )
+            else:
+                console.print("[dim]Downloading RealVisXL (online mode, ~6.5GB)...[/dim]")
+                pipe = StableDiffusionXLPipeline.from_pretrained(
+                    realvisxl_model_id,
+                    torch_dtype=dtype,
+                    cache_dir=models_dir,
+                    use_safetensors=True
+                )
+                # Save locally for future offline use
+                console.print("[dim]Saving RealVisXL locally for offline use...[/dim]")
+                pipe.save_pretrained(local_realvisxl_path)
+        
+        # Disable safety checker to save memory
+        pipe.safety_checker = None
+        return pipe.to(device), "sdxl"
+    
+    else:
+        # Default model: Stable Diffusion v1.4
+        local_model_path = os.path.join(models_dir, 'stable-diffusion-v1-4')
+        
+        if offline_mode:
+            if os.path.exists(local_model_path):
+                console.print(f"[dim]Loading SD v1.4 from local cache ({device})...[/dim]")
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    local_model_path,
+                    torch_dtype=dtype,
+                    local_files_only=True
+                )
+            else:
+                console.print("[red]OFFLINE MODE: Model not found locally![/red]")
+                console.print("[yellow]Please run 'python ollama_vision/download_models.py' first to download the model.[/yellow]")
+                console.print("[yellow]Or switch to ONLINE mode to download on-demand.[/yellow]")
+                raise FileNotFoundError(f"Model not found at {local_model_path}. Run download_models.py first or use online mode.")
+        else:
+            if os.path.exists(local_model_path):
+                console.print(f"[dim]Loading SD v1.4 from local cache ({device})...[/dim]")
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    local_model_path,
+                    torch_dtype=dtype,
+                    local_files_only=True
+                )
+            else:
+                console.print("[dim]Downloading SD v1.4 (online mode)...[/dim]")
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    "CompVis/stable-diffusion-v1-4",
+                    torch_dtype=dtype,
+                    cache_dir=models_dir
+                )
+        
+        pipe.safety_checker = None
+        return pipe.to(device), "sd15"
 
 console = Console()
 
@@ -32,6 +150,37 @@ while True:
         console.print("[red]Please enter 1 for OFFLINE or 2 for ONLINE.[/red]")
 
 console.print()
+
+# ============================================================================
+# Model Selection Menu (Apple Silicon only)
+# ============================================================================
+# Default to "default" model
+selected_model = "default"
+
+if is_apple_silicon():
+    console.print("[bold magenta]🍎 Apple Silicon Detected![/bold magenta]")
+    console.print("[bold cyan]Choose Image Generation Model:[/bold cyan]")
+    console.print("1. [green]Default (SD v1.4)[/green] - Standard Stable Diffusion")
+    console.print("2. [yellow]RealVisXL V4.0[/yellow] - Realistic Vision XL (SDXL, higher quality)")
+    console.print()
+    
+    while True:
+        model_choice = input("Enter 1 for Default or 2 for RealVisXL: ").strip()
+        if model_choice == "1":
+            selected_model = "default"
+            console.print("[green]Using Default model (SD v1.4)[/green]")
+            break
+        elif model_choice == "2":
+            selected_model = "realvisxl"
+            console.print("[yellow]Using RealVisXL V4.0 (SDXL)[/yellow]")
+            break
+        else:
+            console.print("[red]Please enter 1 for Default or 2 for RealVisXL.[/red]")
+    
+    console.print()
+else:
+    # Non-Apple Silicon: silently use default model
+    selected_model = "default"
 
 # Load model name from config
 model_name = MODEL_NAME
@@ -89,51 +238,35 @@ try:
     with console.status("[bold cyan]Creating image...[/bold cyan]") as status:
         device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
         dtype = torch.float16 if device != "cpu" else torch.float32
+        models_dir = os.path.join(os.path.dirname(__file__), 'models')
         
-        # Model loading logic based on selected mode
-        local_model_path = os.path.join(os.path.dirname(__file__), 'models', 'stable-diffusion-v1-4')
+        # Load pipeline using helper function (handles both SD v1.4 and RealVisXL)
+        pipe, pipeline_type = get_pipeline(selected_model, device, dtype, offline_mode, models_dir)
         
-        if offline_mode:
-            # OFFLINE MODE: Require local model
-            if os.path.exists(local_model_path):
-                console.print(f"[dim]Loading model from local cache ({device})...[/dim]")
-                pipe = StableDiffusionPipeline.from_pretrained(
-                    local_model_path, 
-                    torch_dtype=dtype, 
-                    local_files_only=True
-                )
-            else:
-                console.print("[red]OFFLINE MODE: Model not found locally![/red]")
-                console.print("[yellow]Please run 'python ollama_vision/download_models.py' first to download the model.[/yellow]")
-                console.print("[yellow]Or switch to ONLINE mode to download on-demand.[/yellow]")
-                raise FileNotFoundError(f"Model not found at {local_model_path}. Run download_models.py first or use online mode.")
+        # Configure generation parameters based on pipeline type
+        num_steps = INFERENCE_STEPS
+        seed = RANDOM_SEED
+        
+        if pipeline_type == "sdxl":
+            # SDXL-specific parameters for RealVisXL
+            # SDXL works best with larger images (1024x1024)
+            generated_image = pipe(
+                prompt=image_prompt,
+                negative_prompt="blurry, low quality, distorted, deformed, ugly, bad anatomy",
+                num_inference_steps=num_steps,
+                guidance_scale=7.5,
+                width=1024,
+                height=1024,
+                generator=torch.Generator(device).manual_seed(seed)
+            ).images[0]
         else:
-            # ONLINE MODE: Download if needed
-            if os.path.exists(local_model_path):
-                console.print(f"[dim]Loading model from local cache ({device})...[/dim]")
-                pipe = StableDiffusionPipeline.from_pretrained(
-                    local_model_path, 
-                    torch_dtype=dtype, 
-                    local_files_only=True
-                )
-            else:
-                console.print("[dim]Downloading model (online mode)...[/dim]")
-                pipe = StableDiffusionPipeline.from_pretrained(
-                    "CompVis/stable-diffusion-v1-4", 
-                    torch_dtype=dtype,
-                    cache_dir=os.path.join(os.path.dirname(__file__), 'models')
-                )
+            # SD v1.4 parameters (original behavior)
+            generated_image = pipe(
+                image_prompt, 
+                num_inference_steps=num_steps, 
+                generator=torch.Generator(device).manual_seed(seed)
+            ).images[0]
         
-        pipe.safety_checker = None  # Disable safety checker to save memory
-        pipe = pipe.to(device)
-        
-        # Generate image with configurable inference steps
-        num_steps = 20  # Increase for better quality (10-50 typical range)
-        generated_image = pipe(
-            image_prompt, 
-            num_inference_steps=num_steps, 
-            generator=torch.Generator(device).manual_seed(42)
-        ).images[0]
     os.makedirs('ollama_vision/generated_images', exist_ok=True)
     filename = f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     filepath = os.path.join('ollama_vision/generated_images', filename)
