@@ -290,6 +290,18 @@ try:
             main_prompt = prompt_lines[0].strip() if len(prompt_lines) > 0 else image_prompt
             secondary_prompt = prompt_lines[1].strip() if len(prompt_lines) > 1 else ""
             
+            # Truncate prompts to ~75 tokens (roughly 60 words) to avoid CLIP overflow
+            def truncate_prompt(prompt, max_words=55):
+                words = prompt.split()
+                if len(words) > max_words:
+                    truncated = ' '.join(words[:max_words])
+                    console.print(f"[yellow]⚠ Prompt truncated from {len(words)} to {max_words} words[/yellow]")
+                    return truncated
+                return prompt
+            
+            main_prompt = truncate_prompt(main_prompt)
+            secondary_prompt = truncate_prompt(secondary_prompt) if secondary_prompt else ""
+            
             # Show parsed prompts
             if secondary_prompt:
                 console.print(f"[dim]Prompt 1: {main_prompt[:80]}...[/dim]")
@@ -338,15 +350,21 @@ try:
                 ).images[0]
                 generated_images.append(result)
         
+    # Get output directory from config based on pipeline type
+    if pipeline_type == "sdxl":
+        output_dir = REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/realvisxl/')
+    else:
+        output_dir = SD_V14_CONFIG.get('output_directory', 'ollama_vision/generated_images/sd_v14/')
+    
     # Save all generated images
-    os.makedirs('ollama_vision/generated_images', exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     for i, img in enumerate(generated_images):
         if len(generated_images) > 1:
             filename = f"generated_{timestamp}_{i+1}.png"
         else:
             filename = f"generated_{timestamp}.png"
-        filepath = os.path.join('ollama_vision/generated_images', filename)
+        filepath = os.path.join(output_dir, filename)
         img.save(filepath)
         console.print(f"[green]Generated image saved to {filepath}[/green]")
     
