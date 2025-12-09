@@ -15,16 +15,21 @@ from datetime import datetime
 from collections import OrderedDict
 from flask import Flask, render_template_string, request, send_file, jsonify
 import torch
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler, EulerDiscreteScheduler, HeunDiscreteScheduler, DDIMScheduler
+from diffusers import AutoencoderKL
 import ollama
 import gc
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from prompts import SYSTEM_PROMPT
-from config import MODEL_NAME, RANDOM_SEED, REALVISXL_CONFIG
+from config import MODEL_NAME, RANDOM_SEED, REALVISXL_CONFIG, CHARACTER_CONSISTENCY_CONFIG
+from character_manager import CharacterManager
 
 app = Flask(__name__)
+
+# Initialize character manager
+character_manager = CharacterManager()
 
 # Global pipeline (loaded once)
 pipe = None
@@ -41,10 +46,30 @@ jobs_lock = threading.Lock()
 active_jobs_count = 0
 active_jobs_lock = threading.Lock()
 
-def create_job(prompt, optimize_prompt=True):
-    """Create a new job and return its ID."""
+def create_job(prompt, optimize_prompt=True, character_consistency=False, settings=None):
+    """Create a new job and return its ID.
+    
+    Args:
+        prompt: The user's prompt text
+        optimize_prompt: Whether to use Ollama to enhance the prompt
+        character_consistency: Whether to use fixed seed for consistent characters
+        settings: Optional dict with customizable generation settings:
+            - guidance_scale: How closely to follow the prompt (1-20)
+            - inference_steps: Number of denoising steps (10-150)
+    """
     global active_jobs_count
     job_id = str(uuid.uuid4())[:8]
+    
+    # Merge custom settings with defaults from config
+    job_settings = {
+        'guidance_scale': REALVISXL_CONFIG.get('guidance_scale', 6.0),
+        'inference_steps': REALVISXL_CONFIG.get('inference_steps', 45),
+    }
+    if settings:
+        if 'guidance_scale' in settings:
+            job_settings['guidance_scale'] = max(1.0, min(20.0, float(settings['guidance_scale'])))
+        if 'inference_steps' in settings:
+            job_settings['inference_steps'] = max(10, min(150, int(settings['inference_steps'])))
     
     with jobs_lock:
         # Calculate queue position
@@ -54,9 +79,11 @@ def create_job(prompt, optimize_prompt=True):
             'id': job_id,
             'prompt': prompt,
             'optimize_prompt': optimize_prompt,
+            'character_consistency': character_consistency,
+            'settings': job_settings,  # Custom generation settings
             'status': 'queued',  # queued, processing, completed, error
             'step': 0,
-            'total': REALVISXL_CONFIG.get('inference_steps', 45),
+            'total': job_settings['inference_steps'],
             'stage': 'Waiting in queue',
             'queue_position': pending_jobs,
             'created_at': datetime.now().isoformat(),
@@ -122,6 +149,19 @@ def process_job(job_id):
                 system=SYSTEM_PROMPT
             )
             optimized_prompt = response['response'].strip()
+            
+            # Validate response - filter out invalid lines (bullets, numbers, etc.)
+            lines = [line.strip() for line in optimized_prompt.split('\n') 
+                    if line.strip() and not line.strip().startswith('-') 
+                    and not line.strip().startswith('*')
+                    and not (line.strip()[0].isdigit() and line.strip()[1:3] in ['. ', ') '])]
+            
+            if len(lines) < 2:
+                print(f"[Job {job_id}] Warning: Invalid LLM response, using fallback prompt")
+                optimized_prompt = f"{user_prompt}, professional portrait, high quality, detailed\nstudio lighting, RAW photo, shot on Canon EOS R5, 85mm f/1.8, bokeh, film grain"
+            else:
+                # Use first 2 valid lines only
+                optimized_prompt = f"{lines[0]}\n{lines[1]}"
         else:
             # Use the raw prompt as-is
             optimized_prompt = user_prompt
@@ -153,15 +193,33 @@ def process_job(job_id):
             jobs[job_id]['stage'] = 'Generating'
             jobs[job_id]['step'] = 0
         
+        # Get job-specific settings (with fallback to config defaults)
+        job_settings = job.get('settings', {})
+        guidance_scale = job_settings.get('guidance_scale', REALVISXL_CONFIG.get('guidance_scale', 6.0))
+        inference_steps = job_settings.get('inference_steps', REALVISXL_CONFIG.get('inference_steps', 45))
+        
         with pipeline_lock:
-            seed = RANDOM_SEED + hash(job_id) % 10000  # Vary seed per job
+            # Check if using a character
+            character_info = job.get('character')
+            if character_info:
+                # Use character's saved seed
+                seed = character_info['seed']
+                print(f"[Job {job_id}] Using character '{character_info['name']}' with seed {seed}")
+            elif job.get('character_consistency', False):
+                # Use fixed seed for character consistency
+                seed = CHARACTER_CONSISTENCY_CONFIG.get('fixed_seed', 42)
+            else:
+                seed = RANDOM_SEED + hash(job_id) % 10000  # Vary seed per job
+            
+            print(f"[Job {job_id}] Generating with: steps={inference_steps}, guidance={guidance_scale}, seed={seed}")
+            
             result = pipe(
                 prompt=main_prompt,
                 prompt_2=secondary_prompt if secondary_prompt else None,
                 negative_prompt=REALVISXL_CONFIG.get('negative_prompt', ''),
                 negative_prompt_2=REALVISXL_CONFIG.get('negative_prompt', ''),
-                num_inference_steps=REALVISXL_CONFIG.get('inference_steps', 45),
-                guidance_scale=REALVISXL_CONFIG.get('guidance_scale', 6.0),
+                num_inference_steps=inference_steps,
+                guidance_scale=guidance_scale,
                 width=REALVISXL_CONFIG.get('width', 832),
                 height=REALVISXL_CONFIG.get('height', 1216),
                 generator=torch.Generator(device).manual_seed(seed),
@@ -171,15 +229,53 @@ def process_job(job_id):
         with jobs_lock:
             jobs[job_id]['stage'] = 'Saving'
         
-        # Save image
+        # Save image and prompt to individual folder
         workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        output_dir = os.path.join(workspace_root, REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/web_images/'))
-        os.makedirs(output_dir, exist_ok=True)
+        base_output_dir = os.path.join(workspace_root, REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/web_images/'))
+        
+        # If using a saved character, organize into character-specific folder
+        if job.get('character'):
+            # Sanitize character name for folder name (remove special chars)
+            safe_char_name = "".join(c if c.isalnum() or c in (' ', '_', '-') else '_' for c in job['character']['name'])
+            safe_char_name = safe_char_name.strip().replace(' ', '_')
+            base_output_dir = os.path.join(base_output_dir, safe_char_name)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"web_{job_id}_{timestamp}.png"
-        filepath = os.path.join(output_dir, filename)
+        image_name = f"web_{job_id}_{timestamp}"
+        
+        # Create individual folder for this image
+        image_folder = os.path.join(base_output_dir, image_name)
+        os.makedirs(image_folder, exist_ok=True)
+        
+        # Save image
+        filename = f"{image_name}.png"
+        filepath = os.path.join(image_folder, filename)
         result.save(filepath)
+        
+        # Save prompt info to .txt file
+        prompt_filepath = os.path.join(image_folder, f"{image_name}.txt")
+        with open(prompt_filepath, 'w') as f:
+            f.write(f"=== Image Generation Details ===\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Job ID: {job_id}\n")
+            if job.get('character'):
+                f.write(f"Character: {job['character']['name']} (ID: {job['character']['id']})\n")
+            f.write(f"\n=== Original Prompt ===\n")
+            f.write(f"{user_prompt}\n\n")
+            f.write(f"=== Optimized Prompt ===\n")
+            f.write(f"{optimized_prompt}\n\n")
+            f.write(f"=== SDXL Dual Prompts (Actual) ===\n")
+            f.write(f"Line 1: {main_prompt}\n")
+            if secondary_prompt:
+                f.write(f"Line 2: {secondary_prompt}\n")
+            f.write(f"\n=== Generation Settings ===\n")
+            f.write(f"Seed: {seed}\n")
+            f.write(f"Inference Steps: {inference_steps}\n")
+            f.write(f"Guidance Scale: {guidance_scale}\n")
+            f.write(f"Width: {REALVISXL_CONFIG.get('width', 832)}\n")
+            f.write(f"Height: {REALVISXL_CONFIG.get('height', 1216)}\n")
+            f.write(f"Character Consistency: {job.get('character_consistency', False)}\n")
+            f.write(f"Prompt Optimization: {job.get('optimize_prompt', True)}\n")
         
         with jobs_lock:
             jobs[job_id]['status'] = 'completed'
@@ -462,6 +558,55 @@ HTML_TEMPLATE = """
             padding-top: 20px;
             border-top: 1px solid #222;
         }
+        /* Info Section Styles */
+        .info-section {
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 25px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .info-section h3 {
+            color: #48dbfb;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        .info-section p {
+            margin-bottom: 10px;
+            color: #ccc;
+        }
+        .info-section ul {
+            margin: 10px 0;
+            padding-left: 20px;
+            color: #aaa;
+        }
+        .info-section li {
+            margin-bottom: 5px;
+        }
+        .info-section em {
+            color: #feca57;
+            font-style: normal;
+        }
+        .info-section details {
+            margin-top: 15px;
+        }
+        .info-section summary {
+            color: #48dbfb;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .info-section pre {
+            background: #1a1a2e;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #888;
+            margin: 8px 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
         /* Queue Styles */
         .queue-section {
             margin-top: 30px;
@@ -624,12 +769,276 @@ HTML_TEMPLATE = """
             transform: translateX(24px);
             background-color: #fff;
         }
+        /* Advanced Settings Styles */
+        .advanced-settings {
+            margin-bottom: 20px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .advanced-settings summary {
+            padding: 12px 15px;
+            cursor: pointer;
+            color: #48dbfb;
+            font-weight: 600;
+            font-size: 14px;
+            user-select: none;
+            transition: background 0.2s;
+        }
+        .advanced-settings summary:hover {
+            background: #1a1a2e;
+        }
+        .advanced-settings[open] summary {
+            border-bottom: 1px solid #333;
+        }
+        .settings-panel {
+            padding: 15px;
+        }
+        .setting-group {
+            margin-bottom: 20px;
+        }
+        .setting-group label {
+            display: block;
+            color: #a0a0a0;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .setting-group label span {
+            color: #48dbfb;
+            font-weight: 600;
+        }
+        .setting-group input[type="range"] {
+            width: 100%;
+            height: 6px;
+            -webkit-appearance: none;
+            background: #333;
+            border-radius: 3px;
+            outline: none;
+        }
+        .setting-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: linear-gradient(135deg, #48dbfb, #2ecc71);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .setting-group input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+        .setting-help {
+            display: block;
+            font-size: 11px;
+            color: #666;
+            margin-top: 6px;
+            line-height: 1.4;
+        }
+        .setting-help strong {
+            color: #feca57;
+        }
+        .settings-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: #1a1a2e;
+            border-radius: 6px;
+            font-size: 11px;
+            color: #888;
+        }
+        .settings-info p {
+            margin: 5px 0;
+        }
+        .settings-info strong {
+            color: #48dbfb;
+        }
+        /* Character Library Styles */
+        .character-section {
+            margin-bottom: 25px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .character-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .character-header h3 {
+            font-size: 16px;
+            color: #48dbfb;
+            margin: 0;
+            background: none;
+            -webkit-text-fill-color: #48dbfb;
+        }
+        .btn-refresh {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            color: #888;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-refresh:hover {
+            background: #16213e;
+            color: #48dbfb;
+            border-color: #48dbfb;
+        }
+        .character-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .character-card {
+            background: #1a1a2e;
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .character-card:hover {
+            border-color: #48dbfb;
+            transform: translateY(-2px);
+        }
+        .character-card.selected {
+            border-color: #2ecc71;
+            background: #16213e;
+        }
+        .character-card-img {
+            width: 100%;
+            height: 120px;
+            background: #0f0f23;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            object-fit: cover;
+        }
+        .character-card-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: #ccc;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .character-card-meta {
+            font-size: 10px;
+            color: #666;
+        }
+        .character-card-actions {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        .btn-delete {
+            background: rgba(255, 107, 107, 0.2);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            color: #ff6b6b;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
+        .btn-delete:hover {
+            background: rgba(255, 107, 107, 0.4);
+        }
+        .empty-characters {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 40px 20px;
+            color: #444;
+        }
+        .empty-characters p {
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .empty-characters small {
+            font-size: 11px;
+            color: #333;
+        }
+        .selected-character {
+            margin-top: 15px;
+            padding: 10px 15px;
+            background: rgba(46, 204, 113, 0.1);
+            border: 1px solid rgba(46, 204, 113, 0.3);
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            color: #2ecc71;
+        }
+        .selected-character strong {
+            color: #2ecc71;
+        }
+        .btn-clear {
+            background: transparent;
+            border: none;
+            color: #ff6b6b;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0 8px;
+            transition: transform 0.2s;
+        }
+        .btn-clear:hover {
+            transform: scale(1.2);
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🎨 AI Image Generator<br> 
         <h2>Warzone Squad</h2>
+        
+        <!-- Info Section -->
+        <div class="info-section">
+            <h3>ℹ️ How It Works</h3>
+            <p><strong>Workflow:</strong> Your prompt → <em>Ollama LLM optimizes it</em> → <em>RealVisXL generates image</em></p>
+            <p><strong>Prompt Input Tips:</strong></p>
+            <ul>
+                <li>Keep it simple and clear - the AI will enhance it automatically</li>
+                <li>Focus on subject, style, and mood (e.g., "cyberpunk city at night, neon lights")</li>
+                <li>The optimizer creates detailed prompts optimized for RealVisXL's dual-prompt system</li>
+                <li>Advanced: RealVisXL uses 2 prompts (subject + lighting/camera details) for best results</li>
+            </ul>
+            <details>
+                <summary>Advanced Prompt Format (Optional)</summary>
+                <p>If you disable optimization, you can manually provide dual prompts:</p>
+                <pre>happy woman walking in a field of flowers
+RAW photo, shot on Sony Alpha a7 III, 85mm, f/1.8, bokeh, sunny day, film grain</pre>
+                <p>Line 1: Subject and composition | Line 2: Lighting, camera, and quality settings</p>
+            </details>
+        </div>
+        
+        <!-- Character Library Section -->
+        <div class="character-section" id="characterSection">
+            <div class="character-header">
+                <h3>🎭 Character Library</h3>
+                <button type="button" class="btn-refresh" onclick="loadCharacters()">🔄</button>
+            </div>
+            <div class="character-list" id="characterList">
+                <div class="empty-characters">
+                    <p>No saved characters yet</p>
+                    <small>Generate an image and save it as a character to reuse with different poses/scenes</small>
+                </div>
+            </div>
+            <div class="selected-character" id="selectedCharacterInfo" style="display: none;">
+                <strong>Selected:</strong> <span id="selectedCharacterName"></span>
+                <button type="button" class="btn-clear" onclick="clearCharacterSelection()">✕</button>
+            </div>
+        </div>
+        
         <p class="config-info">
             RealVisXL V5.0 | {{ width }}x{{ height }} | {{ steps }} steps
             <span class="mode-badge {{ 'mode-offline' if is_offline else 'mode-online' }}">
@@ -652,6 +1061,48 @@ HTML_TEMPLATE = """
                     <span class="toggle-slider"></span>
                 </label>
             </div>
+            <div class="toggle-group">
+                <div class="toggle-label">
+                    🎭 Character Consistency
+                    <small>Use fixed seed for consistent character generation</small>
+                </div>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="characterConsistencyToggle" checked>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            
+            <!-- Advanced Settings Panel -->
+            <details class="advanced-settings">
+                <summary>⚙️ Advanced Settings</summary>
+                <div class="settings-panel">
+                    <div class="setting-group">
+                        <label for="guidanceScale">
+                            🎯 Guidance Scale: <span id="guidanceValue">{{ guidance_scale }}</span>
+                        </label>
+                        <input type="range" id="guidanceScale" min="1" max="20" step="0.5" value="{{ guidance_scale }}">
+                        <small class="setting-help">
+                            How closely the AI follows your prompt. Lower (1-5) = more creative/abstract. 
+                            Higher (10-20) = stricter adherence but may look artificial. <strong>Recommended: 4-8</strong>
+                        </small>
+                    </div>
+                    <div class="setting-group">
+                        <label for="inferenceSteps">
+                            🔄 Inference Steps: <span id="stepsValue">{{ steps }}</span>
+                        </label>
+                        <input type="range" id="inferenceSteps" min="10" max="150" step="5" value="{{ steps }}">
+                        <small class="setting-help">
+                            More steps = higher quality but slower. 20-30 = fast drafts. 
+                            50-80 = good quality. 100+ = maximum detail. <strong>Default: {{ steps }}</strong>
+                        </small>
+                    </div>
+                    <div class="settings-info">
+                        <p>📊 <strong>Current Config:</strong> {{ scheduler }} scheduler, {{ 'Custom VAE' if vae_model else 'Default VAE' }}</p>
+                        <p>💡 These settings only affect this generation. Config defaults are used for new sessions.</p>
+                    </div>
+                </div>
+            </details>
+            
             <button type="submit" id="submitBtn">✨ Generate Image</button>
         </form>
         
@@ -710,9 +1161,120 @@ HTML_TEMPLATE = """
         const resetBtn = document.getElementById('resetBtn');
         const queueList = document.getElementById('queueList');
         const queueStats = document.getElementById('queueStats');
+        const guidanceScale = document.getElementById('guidanceScale');
+        const inferenceSteps = document.getElementById('inferenceSteps');
+        const guidanceValue = document.getElementById('guidanceValue');
+        const stepsValue = document.getElementById('stepsValue');
         
         let currentJobId = null;
         let queuePollInterval = null;
+        let selectedCharacterId = null;
+        
+        // Character management functions
+        async function loadCharacters() {
+            try {
+                const response = await fetch('/api/characters');
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderCharacters(data.characters);
+                }
+            } catch (error) {
+                console.error('Failed to load characters:', error);
+            }
+        }
+        
+        function renderCharacters(characters) {
+            const characterList = document.getElementById('characterList');
+            
+            if (characters.length === 0) {
+                characterList.innerHTML = `
+                    <div class="empty-characters">
+                        <p>No saved characters yet</p>
+                        <small>Generate an image and save it as a character to reuse with different poses/scenes</small>
+                    </div>
+                `;
+                return;
+            }
+            
+            characterList.innerHTML = characters.map(char => `
+                <div class="character-card ${selectedCharacterId === char.id ? 'selected' : ''}" 
+                     onclick="selectCharacter('${char.id}', '${char.name}')">
+                    ${char.reference_image ? 
+                        `<img class="character-card-img" src="${char.reference_image}" alt="${char.name}">` :
+                        `<div class="character-card-img"></div>`
+                    }
+                    <div class="character-card-name">${char.name}</div>
+                    <div class="character-card-meta">Used ${char.times_used || 0} times</div>
+                    <div class="character-card-actions">
+                        <button class="btn-delete" onclick="deleteCharacter(event, '${char.id}')">🗑️</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function selectCharacter(characterId, characterName) {
+            selectedCharacterId = characterId;
+            
+            // Update UI
+            document.querySelectorAll('.character-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            event.currentTarget.classList.add('selected');
+            
+            // Show selected character info
+            document.getElementById('selectedCharacterName').textContent = characterName;
+            document.getElementById('selectedCharacterInfo').style.display = 'flex';
+            
+            // Enable character consistency toggle automatically
+            document.getElementById('characterConsistencyToggle').checked = true;
+        }
+        
+        function clearCharacterSelection() {
+            selectedCharacterId = null;
+            document.querySelectorAll('.character-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            document.getElementById('selectedCharacterInfo').style.display = 'none';
+        }
+        
+        async function deleteCharacter(event, characterId) {
+            event.stopPropagation(); // Prevent card selection
+            
+            if (!confirm('Delete this character? This cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/characters/${characterId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (selectedCharacterId === characterId) {
+                        clearCharacterSelection();
+                    }
+                    loadCharacters(); // Reload list
+                } else {
+                    alert('Failed to delete character: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Failed to delete character:', error);
+                alert('Failed to delete character');
+            }
+        }
+        
+        // Load characters on page load
+        loadCharacters();
+        
+        // Update slider display values
+        guidanceScale.addEventListener('input', () => {
+            guidanceValue.textContent = guidanceScale.value;
+        });
+        inferenceSteps.addEventListener('input', () => {
+            stepsValue.textContent = inferenceSteps.value;
+        });
         
         function resetForm() {
             document.getElementById('prompt').value = '';
@@ -866,10 +1428,27 @@ HTML_TEMPLATE = """
             
             try {
                 const optimizePrompt = document.getElementById('optimizeToggle').checked;
+                const characterConsistency = document.getElementById('characterConsistencyToggle').checked;
+                const guidanceScaleVal = parseFloat(document.getElementById('guidanceScale').value);
+                const inferenceStepsVal = parseInt(document.getElementById('inferenceSteps').value);
+                
+                const requestBody = { 
+                    prompt, 
+                    optimize_prompt: optimizePrompt, 
+                    character_consistency: characterConsistency,
+                    guidance_scale: guidanceScaleVal,
+                    inference_steps: inferenceStepsVal
+                };
+                
+                // Include character_id if a character is selected
+                if (selectedCharacterId) {
+                    requestBody.character_id = selectedCharacterId;
+                }
+                
                 const response = await fetch('/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt, optimize_prompt: optimizePrompt })
+                    body: JSON.stringify(requestBody)
                 });
                 
                 const data = await response.json();
@@ -926,6 +1505,19 @@ HTML_TEMPLATE = """
 # ============================================================================
 # Load Pipeline
 # ============================================================================
+
+# Scheduler mapping: Different schedulers affect generation speed and quality
+# - DPMSolverMultistepScheduler: Fast, high-quality (recommended for speed)
+# - EulerDiscreteScheduler: Default, balanced quality
+# - HeunDiscreteScheduler: Higher quality, slower
+# - DDIMScheduler: Classic, deterministic results
+SCHEDULER_MAP = {
+    "DPMSolverMultistepScheduler": DPMSolverMultistepScheduler,
+    "EulerDiscreteScheduler": EulerDiscreteScheduler,
+    "HeunDiscreteScheduler": HeunDiscreteScheduler,
+    "DDIMScheduler": DDIMScheduler,
+}
+
 def load_pipeline():
     global pipe, device
     
@@ -949,6 +1541,43 @@ def load_pipeline():
     models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
     local_path = os.path.join(models_dir, 'RealVisXL_V5.0')
     
+    # =========================================================================
+    # VAE Model: Variational Auto-Encoder
+    # =========================================================================
+    # The VAE encodes/decodes images to/from latent space.
+    # A better VAE = sharper details, better colors, less artifacts.
+    # "stabilityai/sd-vae-ft-mse" is fine-tuned for better reconstruction.
+    vae = None
+    vae_loaded_from = None
+    vae_model = REALVISXL_CONFIG.get('vae_model')
+    if vae_model:
+        # Check if VAE is already cached locally
+        vae_cache_path = os.path.join(models_dir, f"models--{vae_model.replace('/', '--')}")
+        vae_local_path = os.path.join(models_dir, vae_model.replace('/', '_'))
+        
+        if os.path.exists(vae_cache_path) or os.path.exists(vae_local_path):
+            print(f"Loading custom VAE from local cache: {vae_model}")
+            vae_loaded_from = "local"
+        else:
+            print(f"Downloading custom VAE: {vae_model} (~335MB)...")
+            vae_loaded_from = "download"
+        
+        try:
+            vae = AutoencoderKL.from_pretrained(
+                vae_model,
+                torch_dtype=dtype,
+                cache_dir=models_dir
+            )
+            if vae_loaded_from == "download":
+                print(f"✓ VAE downloaded and cached successfully")
+            else:
+                print(f"✓ VAE loaded from local cache")
+        except Exception as e:
+            print(f"Warning: Could not load custom VAE: {e}")
+            print("Falling back to default VAE")
+            vae = None
+            vae_loaded_from = None
+    
     global is_offline_mode
     if os.path.exists(local_path):
         print(f"Loading from local: {local_path}")
@@ -957,7 +1586,8 @@ def load_pipeline():
             local_path,
             torch_dtype=dtype,
             local_files_only=True,
-            use_safetensors=True
+            use_safetensors=True,
+            vae=vae  # Use custom VAE if loaded
         )
     else:
         print("Downloading RealVisXL V5.0...")
@@ -966,12 +1596,34 @@ def load_pipeline():
             "SG161222/RealVisXL_V5.0",
             torch_dtype=dtype,
             cache_dir=models_dir,
-            use_safetensors=True
+            use_safetensors=True,
+            vae=vae  # Use custom VAE if loaded
         )
         pipe.save_pretrained(local_path)
     
+    # =========================================================================
+    # Scheduler: Controls the denoising/sampling process
+    # =========================================================================
+    # Different schedulers trade off speed vs quality:
+    # - DPMSolverMultistepScheduler: 20-30% faster, excellent quality
+    # - EulerDiscreteScheduler: Default, balanced
+    # - HeunDiscreteScheduler: Better quality, 2x slower
+    # - DDIMScheduler: Classic, fully deterministic
+    scheduler_name = REALVISXL_CONFIG.get('scheduler', 'EulerDiscreteScheduler')
+    if scheduler_name in SCHEDULER_MAP:
+        print(f"Using scheduler: {scheduler_name}")
+        pipe.scheduler = SCHEDULER_MAP[scheduler_name].from_config(pipe.scheduler.config)
+    else:
+        print(f"Unknown scheduler '{scheduler_name}', using default")
+    
     pipe = pipe.to(device)
     print(f"Pipeline loaded on {device}")
+    
+    # Log configuration summary
+    print(f"  - Scheduler: {scheduler_name}")
+    print(f"  - Custom VAE: {'Yes' if vae else 'No (using default)'}")
+    print(f"  - Use Refiner: {REALVISXL_CONFIG.get('use_refiner', False)}")
+    
     return pipe
 
 # ============================================================================
@@ -984,6 +1636,9 @@ def index():
         width=REALVISXL_CONFIG.get('width', 832),
         height=REALVISXL_CONFIG.get('height', 1216),
         steps=REALVISXL_CONFIG.get('inference_steps', 45),
+        guidance_scale=REALVISXL_CONFIG.get('guidance_scale', 6.0),
+        scheduler=REALVISXL_CONFIG.get('scheduler', 'EulerDiscreteScheduler'),
+        vae_model=REALVISXL_CONFIG.get('vae_model'),
         is_offline=is_offline_mode
     )
 
@@ -1020,12 +1675,61 @@ def generate():
         data = request.get_json()
         user_prompt = data.get('prompt', '').strip()
         optimize_prompt = data.get('optimize_prompt', True)
+        character_consistency = data.get('character_consistency', False)
+        character_id = data.get('character_id')  # Optional character ID
+        
+        # If character_id is provided, load character and combine prompts
+        if character_id:
+            try:
+                character = character_manager.get_character(character_id)
+                if character:
+                    # Use character's description as base, append user's scene description
+                    user_prompt = character_manager.generate_character_prompt(
+                        character_id, 
+                        user_prompt
+                    )
+                    character_consistency = True  # Force character consistency on
+                    print(f"[Character] Using character '{character['name']}' with seed {character['seed']}")
+                else:
+                    print(f"[Warning] Character {character_id} not found, proceeding without character")
+            except Exception as char_err:
+                print(f"[Error] Failed to load character: {char_err}")
+        
+        # Extract custom generation settings
+        settings = {}
+        if 'guidance_scale' in data:
+            settings['guidance_scale'] = data['guidance_scale']
+        if 'inference_steps' in data:
+            settings['inference_steps'] = data['inference_steps']
+        
+        # If using a character, override settings with character's saved settings
+        if character_id and character:
+            char_settings = character.get('settings', {})
+            if 'guidance_scale' in char_settings:
+                settings['guidance_scale'] = char_settings['guidance_scale']
+            if 'num_steps' in char_settings:
+                settings['inference_steps'] = char_settings['num_steps']
         
         if not user_prompt:
             return jsonify({'error': 'No prompt provided'}), 400
         
-        # Create job
-        job_id = create_job(user_prompt, optimize_prompt=optimize_prompt)
+        # Create job with custom settings and character info
+        job_id = create_job(
+            user_prompt, 
+            optimize_prompt=optimize_prompt,
+            character_consistency=character_consistency,
+            settings=settings if settings else None
+        )
+        
+        # Store character info in job for seed override
+        if character_id and character:
+            with jobs_lock:
+                jobs[job_id]['character'] = {
+                    'id': character_id,
+                    'name': character['name'],
+                    'seed': character['seed']
+                }
+        
         print(f"[Job {job_id}] Created for prompt: {user_prompt[:50]}...")
         
         # Try to start the job immediately if capacity allows
@@ -1049,23 +1753,126 @@ def generate():
 
 @app.route('/image/<filename>')
 def serve_image(filename):
-    output_dir = REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/realvisxl/web_generated/')
-    # Get absolute path from workspace root
+    """Serve generated image from its folder."""
+    output_dir = REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/realvisxl/')
     workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = os.path.join(workspace_root, output_dir, filename)
+    
+    # New structure: images are in individual folders
+    # filename format: web_jobid_timestamp.png
+    # folder name: web_jobid_timestamp (same as filename without extension)
+    folder_name = filename.rsplit('.', 1)[0]  # Remove .png extension
+    filepath = os.path.join(workspace_root, output_dir, folder_name, filename)
+    
+    if not os.path.exists(filepath):
+        # Fallback: try old flat structure
+        filepath = os.path.join(workspace_root, output_dir, filename)
     if not os.path.exists(filepath):
         # Try relative to script directory
         filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generated_images', 'realvisxl', filename)
+    
     return send_file(filepath, mimetype='image/png')
 
 @app.route('/download/<filename>')
 def download_image(filename):
+    """Download generated image from its folder."""
     output_dir = REALVISXL_CONFIG.get('output_directory', 'ollama_vision/generated_images/realvisxl/')
     workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = os.path.join(workspace_root, output_dir, filename)
+    
+    # New structure: images are in individual folders
+    folder_name = filename.rsplit('.', 1)[0]  # Remove .png extension
+    filepath = os.path.join(workspace_root, output_dir, folder_name, filename)
+    
+    if not os.path.exists(filepath):
+        # Fallback: try old flat structure
+        filepath = os.path.join(workspace_root, output_dir, filename)
     if not os.path.exists(filepath):
         filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generated_images', 'realvisxl', filename)
+    
     return send_file(filepath, as_attachment=True, download_name=filename)
+
+# ============================================================================
+# Character Management API
+# ============================================================================
+
+@app.route('/api/characters', methods=['GET'])
+def get_characters():
+    """Get list of all saved characters."""
+    try:
+        characters = character_manager.list_characters()
+        return jsonify({
+            'success': True,
+            'characters': characters
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/characters/<character_id>', methods=['GET'])
+def get_character(character_id):
+    """Get specific character by ID."""
+    try:
+        character = character_manager.get_character(character_id)
+        if character:
+            return jsonify({
+                'success': True,
+                'character': character
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Character not found'
+            }), 404
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/characters', methods=['POST'])
+def create_character():
+    """Create a new character."""
+    try:
+        data = request.json
+        character_id = character_manager.save_character(
+            name=data['name'],
+            description=data['description'],
+            seed=data.get('seed', RANDOM_SEED),
+            settings=data.get('settings', {}),
+            reference_image=data.get('reference_image')
+        )
+        return jsonify({
+            'success': True,
+            'character_id': character_id,
+            'message': f"Character '{data['name']}' created successfully"
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+@app.route('/api/characters/<character_id>', methods=['DELETE'])
+def delete_character(character_id):
+    """Delete a character."""
+    try:
+        success = character_manager.delete_character(character_id)
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Character deleted successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Character not found'
+            }), 404
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # ============================================================================
 # Main

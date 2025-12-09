@@ -60,6 +60,16 @@ REALVISXL_CONFIG = CONFIG.get('realvisxl', {
     "negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, watermark, text, signature"
 })
 
+# RealVisXL V4.0 configuration
+REALVISXL_V4_CONFIG = CONFIG.get('realvisxl_v4', {
+    "model_id": "SG161222/RealVisXL_V4.0",
+    "inference_steps": 30,
+    "guidance_scale": 7.5,
+    "width": 1024,
+    "height": 1024,
+    "negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, watermark, text, signature"
+})
+
 # SD v1.4 configuration
 SD_V14_CONFIG = CONFIG.get('sd_v14', {
     "model_id": "CompVis/stable-diffusion-v1-4",
@@ -68,4 +78,10 @@ SD_V14_CONFIG = CONFIG.get('sd_v14', {
     "width": 512,
     "height": 512,
     "negative_prompt": "blurry, low quality, distorted"
+})
+
+# Character consistency configuration
+CHARACTER_CONSISTENCY_CONFIG = CONFIG.get('character_consistency', {
+    "enabled": False,
+    "description": "Use the same random_seed + detailed character description to maintain consistency"
 })

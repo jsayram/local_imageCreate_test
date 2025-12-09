@@ -5,11 +5,14 @@ A local, offline-capable AI image generation pipeline that combines **Ollama's v
 ## ✨ Features
 
 - 🖼️ **Text-to-Image** - Generate images from text descriptions
-- 🔍 **Image-to-Image** - Analyze existing images and create enhanced versions
+- 🎭 **Character Consistency** - Generate the same person across multiple images
+- 🖼️➡️🖼️ **Image-to-Image** - Use reference images to maintain facial features while changing scenes
+- 🔍 **Vision Analysis** - Analyze existing images with Ollama vision models
 - 🎨 **Prompt Optimization** - Automatically enhances your prompts for better results
 - 🍎 **Apple Silicon Optimized** - Full support for M1/M2/M3 Macs with MPS acceleration
 - 🌐 **Offline Capable** - Run completely offline after initial model downloads
 - ⚙️ **Configurable** - All parameters customizable via `config.json`
+- 📁 **Organized Storage** - Character-specific folders for easy management
 
 ## 🚀 Quick Start
 
@@ -57,6 +60,8 @@ python ollama_vision/main.py
 
 ## 📋 Usage
 
+### Basic Workflow
+
 1. **Choose Operating Mode:**
    - `1` - OFFLINE (uses locally cached models)
    - `2` - ONLINE (downloads models on-demand)
@@ -65,10 +70,57 @@ python ollama_vision/main.py
    - `1` - Default (SD v1.4) - Faster, smaller images
    - `2` - RealVisXL V5.0 - Hyper-realistic, larger images
 
-3. **Enter image filename** (optional) - For image-to-image mode
-4. **Enter your prompt** - Describe what you want to generate
+3. **Configure Settings:**
+   - Guidance Scale (prompt adherence)
+   - Inference Steps (quality vs speed)
+   - Number of Images (batch generation)
+   - Character Consistency (fixed seed)
+
+4. **Select Character (Optional):**
+   - Load saved character
+   - Create new character
+   - Skip for one-off generation
+
+5. **Reference Image (Optional - Character Mode):**
+   - Select from character's previous generations
+   - Maintains facial features while changing scene
+   - Adjustable strength (0.5-0.85 recommended)
+
+6. **Enter Prompt:**
+   - For new characters: Full description
+   - For saved characters: Scene/pose only
+   - For reference images: Describe the new scene
 
 Generated images are saved to `ollama_vision/generated_images/`
+
+### Character Consistency Feature
+
+Generate the **same person** across multiple images with different scenes:
+
+1. **Create a Character:**
+   - Generate initial image with full description
+   - Save as character with fixed seed
+   - Character folder created automatically
+
+2. **Reuse Character:**
+   - Select saved character
+   - Only describe scene/pose
+   - Same facial features every time
+
+3. **Reference Image Mode (Advanced):**
+   - Select character + reference image
+   - Model maintains exact facial features from reference
+   - Change scene, lighting, pose, or background
+   - Strength controls variation (0.5 = subtle, 0.85 = major scene change)
+
+**Example Workflow:**
+```
+1. Generate: "28-year-old woman, auburn hair, green eyes..."
+2. Save as character: "Jessica"
+3. Later: Select "Jessica" → "standing in a forest"
+4. Or: Select "Jessica" + reference image → "sitting at a cafe"
+   → Keeps Jessica's exact face from reference, new background
+```
 
 ## ⚙️ Configuration
 
@@ -105,7 +157,14 @@ Edit `config.json` to customize all parameters:
 | `guidance_scale` | Prompt adherence (lower = more natural) | 5.0-7.5 |
 | `width` / `height` | Output resolution | 1024×1024 for SDXL |
 | `random_seed` | For reproducible results | Any integer |
+| `img2img_strength` | How much to change reference (img2img mode) | 0.5-0.85 |
 | `negative_prompt` | What to avoid in generation | See config |
+
+**Img2Img Strength Guide:**
+- `0.3-0.5`: Subtle changes, keep most facial details
+- `0.5-0.7`: Balanced, maintain person but allow scene variation
+- `0.7-0.85`: Major scene changes, preserve core facial structure
+- `0.85-0.95`: Maximum variation, minimal reference influence
 
 ### Character Consistency
 

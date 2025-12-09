@@ -147,3 +147,9 @@ ollama_vision/prompts.py
 config.json
 .env
 .env.local
+config copy.json
+
+/outputs/
+ollama_vision/characters.json
+assets/characters/
+.DS_Store
