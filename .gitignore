@@ -143,6 +143,10 @@ ollama_vision/verify_offline.py
 ollama_vision/.DS_Store
 ollama_vision/prompts.py
 
+# InstantID checkpoints and models (large files - auto-downloaded)
+checkpoints/
+models/
+
 # Configuration files
 config.json
 .env

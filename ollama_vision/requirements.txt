@@ -10,3 +10,9 @@ accelerate
 safetensors
 compel>=2.0.0
 flask>=3.0.0
+
+# InstantID / FaceID mode dependencies (optional - only needed for face-lock hard mode)
+# These are required if you want to use InstantID for stronger face consistency:
+opencv-python
+insightface
+onnxruntime
